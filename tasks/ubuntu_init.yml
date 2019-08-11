@@ -1,0 +1,56 @@
+# ubuntu_init.yml
+---
+
+- name: Creates flags directory
+  file:
+    path: /opt/flags
+    state: directory
+    owner: "{{ ansible_env['USER'] }}"
+    group: "{{ ansible_env['USER'] }}"
+  become: yes
+
+# @see https://ttl255.com/ansible-getting-date-and-timestamp/
+- name: Get 5 minutes ago timestamp from the system
+  command: "date +%s -d '5 minutes ago'"
+  register: five_minutes_ago
+  changed_when: False
+
+- name: Resynchronize package index
+  apt:
+    update_cache: yes
+    cache_valid_time: 86400
+  become: yes
+  register: apt_update
+
+- name: Upgrade installed packages
+  apt:
+    upgrade: dist
+    dpkg_options: 'force-confold,force-confdef'
+  become: yes
+  when: apt_update.cache_updated or apt_update.cache_update_time > five_minutes_ago.stdout|int
+  register: apt_upgrade
+
+- name: Install packages to allow apt to use a repository over HTTPS
+  apt:
+    name: "{{ packages }}"
+  vars:
+    packages:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg-agent
+      - software-properties-common
+  become: yes
+  register: apt_install
+
+- name: Remove useless packages from the cache
+  apt:
+    autoclean: yes
+  become: yes
+  when: apt_upgrade.changed or apt_install.changed
+
+- name: Remove dependencies that are no longer required
+  apt:
+    autoremove: yes
+  become: yes
+  when: apt_upgrade.changed or apt_install.changed

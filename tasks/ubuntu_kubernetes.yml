@@ -1,0 +1,191 @@
+# ubuntu_kubernetes.yml
+# @see https://kubernetes.io/docs/setup/independent/install-kubeadm/
+---
+
+- name: Disable swap in filesystems file
+  lineinfile:
+    path: /etc/fstab
+    regexp: '^([^#].*( swap ).*)$'
+    line: '#\1'
+    backrefs: yes
+    backup: yes
+  become: yes
+  register: fstab
+
+- name: Disable swap in current session
+  command: "swapoff -a"
+  become: yes
+  when: fstab.changed
+
+- name: Add kubeadm apt signing key
+  apt_key:
+    id: BA07F4FB
+    url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+  become: yes
+
+- name: Add kubeadm repository
+  apt_repository:
+    repo: "deb https://apt.kubernetes.io/ kubernetes-xenial main"
+  become: yes
+  register: apt_repository
+
+- name: Resynchronize package index
+  apt:
+    update_cache: yes
+  become: yes
+  when: apt_repository.state == "present" and apt_repository.changed
+  register: apt_update
+
+- name: Install kubeadm
+  apt:
+    name: "{{ packages }}"
+  vars:
+    packages:
+      - kubelet=1.14.0-00
+      - kubeadm=1.14.0-00
+      - kubectl=1.14.0-00
+  become: yes
+  when: apt_repository.state == "present"
+  register: apt_install
+
+- name: Prevent kubelet to be upgraded
+  dpkg_selections:
+    name: kubelet
+    selection: hold
+  become: yes
+  when: apt_install.changed
+
+- name: Prevent kubeadm to be upgraded
+  dpkg_selections:
+    name: kubeadm
+    selection: hold
+  become: yes
+  when: apt_install.changed
+
+- name: Prevent kubectl to be upgraded
+  dpkg_selections:
+    name: kubectl
+    selection: hold
+  become: yes
+  when: apt_install.changed
+
+- name: Get kubernetes images
+  shell: "kubeadm config images pull && touch /opt/flags/kubeadm_images_pull"
+  args:
+    creates: /opt/flags/kubeadm_images_pull
+  become: yes
+  when: apt_repository.state == "present"
+
+# @TODO Properly set network interface and address.
+# @TODO Properly set node name.
+- name: Initialize Kubernetes control-plane
+  shell: >
+    kubeadm init
+    --pod-network-cidr=10.244.0.0/16
+    --apiserver-advertise-address={{ ansible_eth1['ipv4']['address'] }}
+    --apiserver-cert-extra-sans={{ ansible_eth1['ipv4']['address'] }}
+    --node-name=master
+    && touch /opt/flags/kubeadm_init
+  args:
+    creates: /opt/flags/kubeadm_init
+  become: yes
+  when: apt_repository.state == "present"
+
+- name: Create Kubernetes user directory
+  file:
+    path: "{{ ansible_env['HOME'] }}/.kube"
+    state: directory
+  when: apt_repository.state == "present"
+
+- name: Copy Kubernetes configuration file
+  copy:
+    src: "/etc/kubernetes/admin.conf"
+    dest: "{{ ansible_env['HOME'] }}/.kube/config"
+    remote_src: yes
+    owner: "{{ ansible_env['USER'] }}"
+    group: "{{ ansible_env['USER'] }}"
+    mode: 0644
+  become: yes
+  when: apt_repository.state == "present"
+
+- name: Fetch Kubernetes configuration file
+  fetch:
+    src: "/etc/kubernetes/admin.conf"
+    dest: "./k8s.config"
+    flat: yes
+  become: yes
+  when: apt_repository.state == "present"
+
+- name: Setup iptables for flannel pod
+  shell: "sysctl net.bridge.bridge-nf-call-iptables=1 && touch /opt/flags/kubernetes_flannel_iptables"
+  args:
+    creates: /opt/flags/kubernetes_flannel_iptables
+  become: yes
+  when: apt_repository.state == "present"
+
+- name: Install flannel pod network add-on
+  shell: >
+    kubectl apply
+    -f https://raw.githubusercontent.com/coreos/flannel/a70459be0084506e4ec919aa1c114638878db11b/Documentation/kube-flannel.yml
+    && touch /opt/flags/kubernetes_flannel_pod
+  args:
+    creates: /opt/flags/kubernetes_flannel_pod
+  when: apt_repository.state == "present"
+
+- name: Schedule pods on master for a single-machine cluster
+  shell: "kubectl taint nodes --all node-role.kubernetes.io/master- && touch /opt/flags/kubernetes_kubectl_taint_nodes"
+  args:
+    creates: /opt/flags/kubernetes_kubectl_taint_nodes
+  when: apt_repository.state == "present"
+
+- name: Create Kubernetes dashboard
+  shell: >
+    kubectl create
+    -f https://raw.githubusercontent.com/kubernetes/dashboard/v1.10.1/src/deploy/recommended/kubernetes-dashboard.yaml
+    && touch /opt/flags/kubernetes_dashboard
+  args:
+    creates: /opt/flags/kubernetes_dashboard
+  when: apt_repository.state == "present"
+
+- name: Config file for dashboard admin user
+  copy:
+    content: |
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: admin-user
+        namespace: kube-system
+    dest: "/tmp/dashboard-adminuser.yaml"
+    mode: 0644
+  when: apt_repository.state == "present"
+
+- name: Setup dashboard admin user
+  shell: "kubectl apply -f /tmp/dashboard-adminuser.yaml && touch /opt/flags/kubernetes_dashboard_adminuser"
+  args:
+    creates: /opt/flags/kubernetes_dashboard_adminuser
+  when: apt_repository.state == "present"
+
+- name: Config file for dashboard cluster role binding
+  copy:
+    content: |
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: admin-user
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: cluster-admin
+      subjects:
+      - kind: ServiceAccount
+        name: admin-user
+        namespace: kube-system
+    dest: "/tmp/dashboard-clusterrolebinding.yaml"
+    mode: 0644
+  when: apt_repository.state == "present"
+
+- name: Setup dashboard cluster role binding
+  shell: "kubectl create -f /tmp/dashboard-clusterrolebinding.yaml && touch /opt/flags/kubernetes_dashboard_clusterrolebinding"
+  args:
+    creates: /opt/flags/kubernetes_dashboard_clusterrolebinding
+  when: apt_repository.state == "present"

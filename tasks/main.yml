@@ -1,0 +1,14 @@
+# main.yml
+---
+
+- name: Run init tasks
+  import_tasks: ubuntu_init.yml
+  when: ansible_distribution|lower == 'ubuntu'
+
+- name: Run docker tasks
+  import_tasks: ubuntu_docker.yml
+  when: ansible_distribution|lower == 'ubuntu'
+
+- name: Run kubernetes tasks
+  import_tasks: ubuntu_kubernetes.yml
+  when: ansible_distribution|lower == 'ubuntu'

@@ -1,0 +1,50 @@
+# ubuntu_docker.yml
+# @see https://docs.docker.com/install/linux/docker-ce/ubuntu/
+---
+
+- name: Add Docker-CE apt signing key
+  apt_key:
+    id: 0EBFCD88
+    url: https://download.docker.com/linux/ubuntu/gpg
+  become: yes
+
+- name: Get Ubuntu distribution short codename
+  command: "lsb_release -cs"
+  register: ubuntu_short_codename
+  changed_when: False
+
+- name: Get hardware platform
+  command: "uname -i"
+  register: hardware_platform
+  changed_when: False
+
+- name: Add Docker-CE repository
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ubuntu_short_codename.stdout }} stable"
+  become: yes
+  when: hardware_platform.stdout == "x86_64"
+  register: apt_repository
+
+- name: Resynchronize package index
+  apt:
+    update_cache: yes
+  become: yes
+  when: apt_repository.state == "present" and apt_repository.changed
+  register: apt_update
+
+- name: Install Docker-CE
+  apt:
+    name: docker-ce
+  become: yes
+  when: apt_repository.state == "present"
+  register: apt_install
+
+- name: Get current user
+  command: "whoami"
+  when: apt_install.changed
+  register: current_user
+
+- name: Allow current user to use docker
+  command: "usermod -aG docker {{ current_user.stdout }}"
+  become: yes
+  when: apt_install.changed
